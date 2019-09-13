@@ -1,0 +1,139 @@
+diff --git a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeFormatter.scala b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeFormatter.scala
+index 2ec3145827..e16b5d3905 100644
+--- a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeFormatter.scala
++++ b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeFormatter.scala
+@@ -32,8 +32,8 @@ object CodeFormatter {
+       """([ |\t]*?\/\/[\s\S]*?\n)""").r           // strip //comment
+   val extraNewLinesRegexp = """\n\s*\n""".r       // strip extra newlines
+ 
+-  def format(code: CodeAndComment, maxLines: Int = -1): String = {
+-    val formatter = new CodeFormatter
++  def format(code: CodeAndComment, maxLines: Int = -1, hasLineNumber: Boolean = true): String = {
++    val formatter = new CodeFormatter(hasLineNumber)
+     val lines = code.body.split("\n")
+     val needToTruncate = maxLines >= 0 && lines.length > maxLines
+     val filteredLines = if (needToTruncate) lines.take(maxLines) else lines
+@@ -100,7 +100,7 @@ object CodeFormatter {
+   }
+ }
+ 
+-private class CodeFormatter {
++private class CodeFormatter(hasLineNumber: Boolean) {
+   private val code = new StringBuilder
+   private val indentSize = 2
+ 
+@@ -148,9 +148,11 @@ private class CodeFormatter {
+     } else {
+       indentString
+     }
+-    code.append(f"/* ${currentLine}%03d */")
++    if (hasLineNumber) {
++      code.append(f"/* ${currentLine}%03d */ ")
++      currentLine += 1
++    }
+     if (line.trim().length > 0) {
+-      code.append(" ") // add a space after the line number comment.
+       code.append(thisLineIndent)
+       if (inCommentBlock && line.startsWith("*") || line.startsWith("*/")) code.append(" ")
+       code.append(line)
+@@ -158,7 +160,6 @@ private class CodeFormatter {
+     code.append("\n")
+     indentLevel = newIndentLevel
+     indentString = " " * (indentSize * newIndentLevel)
+-    currentLine += 1
+   }
+ 
+   private def result(): String = code.result()
+diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala
+index 03adeaaa66..dff49c8d59 100644
+--- a/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala
++++ b/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala
+@@ -17,10 +17,14 @@
+ 
+ package org.apache.spark.sql.execution
+ 
+-import java.util.Collections
++import java.io.{BufferedWriter, File, OutputStreamWriter}
++import java.text.SimpleDateFormat
++import java.util.{Collections, Date}
+ 
+ import scala.collection.JavaConverters._
+ 
++import org.apache.hadoop.fs.Path
++
+ import org.apache.spark.broadcast.Broadcast
+ import org.apache.spark.internal.Logging
+ import org.apache.spark.rdd.RDD
+@@ -35,7 +39,7 @@ import org.apache.spark.sql.execution.streaming.{StreamExecution, StreamingQuery
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.streaming.StreamingQuery
+ import org.apache.spark.sql.vectorized.ColumnarBatch
+-import org.apache.spark.util.{AccumulatorV2, LongAccumulator}
++import org.apache.spark.util.{AccumulatorV2, LongAccumulator, Utils}
+ 
+ /**
+  * Contains methods for debugging query execution.
+@@ -171,6 +175,63 @@ package object debug {
+     def debugCodegen(): Unit = {
+       debugPrint(codegenString(query.queryExecution.executedPlan))
+     }
++
++    /**
++     * Dumps all the generated code found in this plan.
++     */
++    def debugCodegenToFiles(): Unit = {
++      val outputPath = {
++        // TODO: Any other more efficient way to look for `sql/catalyst/target/generated-sources`?
++        val sparkClassLoader = Utils.getSparkClassLoader
++        val sparkRootDir = new File(sparkClassLoader.getResource(".").getPath)
++          .getParentFile.getAbsolutePath
++        val generatedSrcDir = new File(s"$sparkRootDir/sql/catalyst/target/generated-sources")
++        if (!generatedSrcDir.exists()) {
++          throw new AnalysisException("Output directory not found: " +
++            generatedSrcDir.getAbsolutePath)
++        }
++
++        // Creates an output directory for the given query
++        val outputDirName = s"query-${new SimpleDateFormat("yyyyMMddHHmmss").format(new Date())}"
++        val outputDir = new File(s"${generatedSrcDir.getAbsolutePath}/$outputDirName")
++        if (!outputDir.mkdir()) {
++          throw new AnalysisException("Cannot create an output directory: " +
++            outputDir.getAbsolutePath)
++        }
++
++        debugPrint(s"Output generated codes in ${outputDir.getAbsolutePath}")
++        outputDir.getAbsolutePath
++
++      }
++
++      val hadoopConf = SparkSession.getActiveSession.get.sessionState.newHadoopConf()
++      def writeToFile(path: Path)(f: => Seq[String]): Unit = {
++        val fs = path.getFileSystem(hadoopConf)
++        val writer = new BufferedWriter(new OutputStreamWriter(fs.create(path)))
++        try {
++          f.foreach(writer.write)
++        } finally {
++          writer.close()
++        }
++      }
++
++      // Outputs basic information in `plan-info.txt`
++      writeToFile(new Path(s"$outputPath/plan-info.txt")) {
++        query.queryExecution.toString ::
++        "\n\n== Whole Stage Codegen ==\n" ::
++        codegenString(query.queryExecution.executedPlan) ::
++        Nil
++      }
++
++      // Then, outputs a Java source file for each `WholeStageCodegenExec`
++      val codegenStrings = query.queryExecution.executedPlan
++        .collect { case s: WholeStageCodegenExec => s }.map(_.doCodeGen()._2)
++      codegenStrings.zipWithIndex.foreach { case (source, i) =>
++        writeToFile(new Path(s"$outputPath/query-subtree-$i.java")) {
++          CodeFormatter.format(source, hasLineNumber = false) :: Nil
++        }
++      }
++    }
+   }
+ 
+   implicit class DebugStreamQuery(query: StreamingQuery) extends Logging {
