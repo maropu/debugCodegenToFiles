@@ -45,10 +45,10 @@ index 2ec3145827..e16b5d3905 100644
  
    private def result(): String = code.result()
 diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala
-index 03adeaaa66..dff49c8d59 100644
+index 6a57ef2caf..9d436cb49a 100644
 --- a/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala
 +++ b/sql/core/src/main/scala/org/apache/spark/sql/execution/debug/package.scala
-@@ -17,10 +17,14 @@
+@@ -17,11 +17,15 @@
  
  package org.apache.spark.sql.execution
  
@@ -58,13 +58,14 @@ index 03adeaaa66..dff49c8d59 100644
 +import java.util.{Collections, Date}
  
  import scala.collection.JavaConverters._
+ import scala.util.control.NonFatal
  
 +import org.apache.hadoop.fs.Path
 +
  import org.apache.spark.broadcast.Broadcast
  import org.apache.spark.internal.Logging
  import org.apache.spark.rdd.RDD
-@@ -35,7 +39,7 @@ import org.apache.spark.sql.execution.streaming.{StreamExecution, StreamingQuery
+@@ -36,7 +40,7 @@ import org.apache.spark.sql.execution.streaming.{StreamExecution, StreamingQuery
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.streaming.StreamingQuery
  import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -73,7 +74,7 @@ index 03adeaaa66..dff49c8d59 100644
  
  /**
   * Contains methods for debugging query execution.
-@@ -171,6 +175,63 @@ package object debug {
+@@ -187,6 +191,63 @@ package object debug {
      def debugCodegen(): Unit = {
        debugPrint(codegenString(query.queryExecution.executedPlan))
      }
